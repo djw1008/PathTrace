@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Data / weights / outputs
+data/
+pretrained_vae/
+checkpoints/
+external_eval_results/
+*.npz
+*.npy
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.csv
+*.xlsx
+*.tsv
+*.gz
+*.zip
+*.tar
+*.rar
+
+# Logs / temp
+logs/
+tmp/
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Figures / docs / paper materials
+figures/
+paper_materials/
+oup-authoring-template/
+slides_png/
+analysis/
+jupyter/
+output/
+scripts/
+
+# LaTeX / build artifacts
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.tiff
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.xdv
+*.tex
