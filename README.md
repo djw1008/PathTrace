@@ -24,6 +24,10 @@ This repository contains the core model architecture, training scripts, and infe
 │   └── pathways/
 │       ├── ReactomePathways.gmt  # CpG-to-Reactome pathway annotations
 │       └── ReactomePathways.txt  # Reactome ID-to-name mapping
+├── examples/
+│   └── input_data/
+│       ├── example_beta.csv      # Ten GSE72680 samples (CpGs x samples)
+│       └── example_meta.csv      # Matching sample metadata and ages
 ├── models/
 │   ├── __init__.py
 │   ├── ContrastivePathwayTransformer.py   # PathTrace model
@@ -98,12 +102,14 @@ Given a trained checkpoint, external beta matrix, and sample metadata, run the f
 ```bash
 python run_external_eval.py \
   --checkpoint ./checkpoints/pathtrace/checkpoints/best_model.pt \
-  --beta_path ./path/to/test_beta.csv \
-  --meta_path ./path/to/test_meta.csv \
+  --beta_path ./examples/input_data/example_beta.csv \
+  --meta_path ./examples/input_data/example_meta.csv \
   --output_dir ./external_eval_results
 ```
 
 The beta-value matrix must contain CpGs as rows and samples as columns. The metadata CSV must contain a sample identifier column (`sample_id`, `SampleID`, `ID`, `id`, or `sample`) and an `age` column. Optional columns used for stratified evaluation include `project_id`, `sample_type`, `tissue`, and `platform`.
+
+The bundled example contains 10 publicly available control samples from GSE72680, selected to span ages 18--77 years. It is provided only as a compact inference example; the full GSE72680 cohort was used for the reported dataset-level evaluation.
 
 The script outputs `predictions.csv`, `gse_mae_comparison.csv`, and `tissue_mae_comparison.csv`.
 

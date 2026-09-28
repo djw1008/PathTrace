@@ -1,0 +1,11 @@
+sample_id,age,project_id,tissue,sample_type,platform
+GSM1868056,18.0,GSE72680,whole blood,control,450K
+GSM1868255,23.0,GSE72680,whole blood,control,450K
+GSM1868101,30.0,GSE72680,whole blood,control,450K
+GSM1868392,35.0,GSE72680,whole blood,control,450K
+GSM1868364,42.0,GSE72680,whole blood,control,450K
+GSM1868246,46.0,GSE72680,whole blood,control,450K
+GSM1868239,49.0,GSE72680,whole blood,control,450K
+GSM1868221,52.0,GSE72680,whole blood,control,450K
+GSM1868370,56.0,GSE72680,whole blood,control,450K
+GSM1868097,77.0,GSE72680,whole blood,control,450K

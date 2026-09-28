@@ -22,6 +22,8 @@ external_eval_results/
 *.ckpt
 *.h5
 *.csv
+!examples/input_data/example_beta.csv
+!examples/input_data/example_meta.csv
 *.xlsx
 *.tsv
 *.gz
