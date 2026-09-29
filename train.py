@@ -107,40 +107,6 @@ def build_pathway_indices_from_npz(gmt_path, cpg_names, min_cpgs=5, max_cpgs=500
 
 
 # =============================================================================
-# 加载预训练 VAE 权重
-# =============================================================================
-
-def _load_pretrained_vae_weights(model, pathway_ids, vae_ckpt_dir, logger):
-    if not vae_ckpt_dir or not os.path.isdir(vae_ckpt_dir):
-        logger.info('未指定 --vae_ckpt_dir 或目录不存在，Tokenizer 从头训练')
-        return
-    raw = model.module if isinstance(model, nn.DataParallel) else model
-    vae_state_dicts = []
-    loaded, skipped = 0, 0
-    for pid in pathway_ids:
-        ckpt_path = os.path.join(vae_ckpt_dir, f'{pid}.pt')
-        if os.path.exists(ckpt_path):
-            ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-            vae_state_dicts.append(ckpt['state_dict'])
-            loaded += 1
-        else:
-            vae_state_dicts.append({})
-            skipped += 1
-    raw.tokenizer.load_pretrained_vae_weights(vae_state_dicts)
-    logger.info('VAE 权重加载：成功 %d 条，跳过 %d 条', loaded, skipped)
-
-
-def _freeze_tokenizer(model, logger):
-    """冻结 PathwayTokenizer 的全部参数"""
-    raw = model.module if isinstance(model, nn.DataParallel) else model
-    frozen = 0
-    for param in raw.tokenizer.parameters():
-        param.requires_grad = False
-        frozen += param.numel()
-    logger.info('Tokenizer 已冻结，冻结参数量: %d', frozen)
-
-
-# =============================================================================
 # 评估
 # =============================================================================
 
@@ -282,21 +248,6 @@ def train(args, logger):
 
     # ── 4. 模型 ────────────────────────────────────────────────────────────
     hidden_topo = [int(h) for h in args.hidden_topo.split(',')]
-    # 若 VAE 检查点存在，自动读取其 hidden_topo，避免结构不匹配
-    if args.vae_ckpt_dir and os.path.isdir(args.vae_ckpt_dir):
-        for pid in pathway_ids:
-            ckpt_path = os.path.join(args.vae_ckpt_dir, f'{pid}.pt')
-            if os.path.exists(ckpt_path):
-                ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-                if 'hidden_topo' in ckpt:
-                    ckpt_topo = ckpt['hidden_topo']
-                    if isinstance(ckpt_topo, str):
-                        ckpt_topo = [int(h) for h in ckpt_topo.split(',')]
-                    if ckpt_topo != hidden_topo:
-                        logger.info('检测到 VAE 检查点的 hidden_topo=%s，与当前参数 %s 不一致，自动使用 %s',
-                                    ckpt_topo, hidden_topo, ckpt_topo)
-                        hidden_topo = ckpt_topo
-                    break
     pred_hidden = [int(h) for h in args.pred_hidden.split(',')]
     diff_hidden = [int(h) for h in args.diff_predictor_hidden.split(',')]
 
@@ -313,14 +264,6 @@ def train(args, logger):
         diff_predictor_hidden=diff_hidden,
         use_pos_enc=args.use_pos_enc,
     ).to(device)
-
-    # 先把预训练的 VAE 权重原封不动地加载进来
-    _load_pretrained_vae_weights(model, pathway_ids, args.vae_ckpt_dir, logger)
-
-    model = model.to(device)
-
-    if args.freeze_tokenizer:
-        _freeze_tokenizer(model, logger)
 
     if torch.cuda.device_count() > 1:
         gpu_id = device.index if device.type == 'cuda' else 0
@@ -522,137 +465,6 @@ def train(args, logger):
     return os.path.join(args.path_save, 'checkpoints', 'best_model.pt') if best_epoch > 0 else None
 
 
-def inference_external_test(checkpoint_path, test_beta_path, test_meta_path, device, logger):
-    """
-    训练完成后自动在外部测试集上推理
-    使用与训练相同的数据预处理方式
-    """
-    import pandas as pd
-    from scipy import stats
-
-    if not os.path.exists(test_beta_path) or not os.path.exists(test_meta_path):
-        logger.info('外部测试集文件不存在，跳过自动推理')
-        return None
-
-    logger.info('=' * 60)
-    logger.info('开始自动推理外部测试集')
-    logger.info('=' * 60)
-
-    # 加载模型
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    config = ckpt.get('config', {
-        'latent_dim': 32,
-        'hidden_topo': [128, 128],
-        'nhead': 8,
-        'num_layers': 3,
-        'dim_feedforward': 256,
-        'dropout': 0.1,
-        'aggregator_mode': 'attention',
-        'predictor_hidden': [64, 32],
-        'diff_predictor_hidden': [32, 16],
-    })
-
-    pathway_cpg_idx = ckpt['pathway_cpg_idx']
-    cpg_names = ckpt['cpg_names']
-    cpg_means = ckpt.get('cpg_means', None)  # 训练集CpG均值
-    x_train_knn = ckpt.get('x_train_knn', None)  # 训练集子集，用于KNN插补
-    age_norm = ckpt.get('age_norm', 100.0)
-
-    from models.ContrastivePathwayTransformer import ContrastivePathwayTransformer
-    model = ContrastivePathwayTransformer(
-        pathway_cpg_indices=pathway_cpg_idx,
-        latent_dim=config['latent_dim'],
-        hidden_topo=config.get('hidden_topo', [64, 64]),
-        nhead=config.get('nhead', 4),
-        num_layers=config.get('num_layers', 3),
-        dim_feedforward=config.get('dim_feedforward', 128),
-        dropout=config.get('dropout', 0.1),
-        aggregator_mode=config.get('aggregator_mode', 'attention'),
-        predictor_hidden=config.get('predictor_hidden', [64, 32]),
-        diff_predictor_hidden=config.get('diff_predictor_hidden', [32, 16]),
-        use_pos_enc=config.get('use_pos_enc', False),
-    )
-
-    model.load_state_dict(ckpt['model_state_dict'])
-    model.to(device)
-    model.eval()
-
-    # （测试集加载和插补代码不变）
-    logger.info('加载测试数据...')
-    df_beta = pd.read_csv(test_beta_path, index_col=0)
-    df_meta = pd.read_csv(test_meta_path)
-
-    df_beta_aligned = df_beta.reindex(cpg_names)
-    sample_ids = df_beta_aligned.columns.tolist()
-
-    age_col = next((col for col in df_meta.columns if 'age' in col.lower()), None)
-    y_test = None
-    if age_col:
-        id_col = next((col for col in ['sample_id', 'SampleID', 'ID', 'id', 'sample'] if col in df_meta.columns), None)
-        if id_col:
-            df_meta_indexed = df_meta.set_index(id_col)
-            y_test = df_meta_indexed.reindex(sample_ids)[age_col].values.astype(np.float32)
-        elif len(df_meta) == len(sample_ids):
-            y_test = df_meta[age_col].values.astype(np.float32)
-
-    def run_prediction(X_data, strategy_name):
-        logger.info(f'  [{strategy_name}] 开始预测...')
-        predictions = []
-        batch_size = 256
-        with torch.no_grad():
-            for i in range(0, X_data.shape[0], batch_size):
-                end_idx = min(i + batch_size, X_data.shape[0])
-                X_batch = torch.from_numpy(X_data[i:end_idx]).to(device)
-                predictions.append(model(X_batch).cpu().numpy())
-        y_pred = np.concatenate(predictions, axis=0).flatten() * age_norm
-        return y_pred
-
-    def evaluate_prediction(y_pred, strategy_name):
-        if y_test is None: return None
-        mae = np.mean(np.abs(y_pred - y_test))
-        rmse = np.sqrt(np.mean((y_pred - y_test) ** 2))
-        corr, p_value = stats.pearsonr(y_pred, y_test)
-        medae = np.median(np.abs(y_pred - y_test))
-        ss_res = np.sum((y_test - y_pred) ** 2)
-        ss_tot = np.sum((y_test - np.mean(y_test)) ** 2)
-        r2 = 1 - (ss_res / ss_tot)
-        logger.info(f'  [{strategy_name}] MAE: {mae:.4f}, RMSE: {rmse:.4f}, R: {corr:.4f}, R²: {r2:.4f}')
-        return {'MAE': mae, 'RMSE': rmse, 'MedAE': medae, 'Pearson_r': corr, 'R2': r2, 'y_pred': y_pred}
-
-    X_test_raw = df_beta_aligned.T.values.astype(np.float32)
-    results = {}
-
-    # 策略1: KNN
-    if x_train_knn is not None:
-        logger.info('=' * 60)
-        logger.info('策略1: KNN插补')
-        from sklearn.impute import KNNImputer
-        imputer = KNNImputer(n_neighbors=min(5, len(x_train_knn)), weights='distance')
-        X_test_knn = imputer.fit_transform(np.vstack([x_train_knn, X_test_raw]))[len(x_train_knn):].astype(np.float32)
-        res = evaluate_prediction(run_prediction(X_test_knn, 'KNN'), 'KNN')
-        if res: results['KNN'] = res
-
-    # 策略2: Mean
-    if cpg_means is not None:
-        logger.info('=' * 60)
-        logger.info('策略2: 训练集均值填充 (极速版)')
-        X_test_mean = X_test_raw.copy()
-        nan_mask = np.isnan(X_test_mean)
-        X_test_mean = np.where(nan_mask, cpg_means, X_test_mean).astype(np.float32)
-        res = evaluate_prediction(run_prediction(X_test_mean, 'Mean'), 'Mean')
-        if res: results['Mean'] = res
-
-    # 保存结果
-    results_dir = os.path.join(os.path.dirname(checkpoint_path), '..', 'external_test_results')
-    os.makedirs(results_dir, exist_ok=True)
-    if y_test is not None:
-        for strategy_name, result in results.items():
-            pd.DataFrame({'sample_id': sample_ids, 'predicted_age': result['y_pred'], 'true_age': y_test}) \
-                .to_csv(os.path.join(results_dir, f'predictions_{strategy_name.lower()}.csv'), index=False)
-        return results.get('KNN', list(results.values())[0]) if results else None
-    return None
-
-
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--data_source', type=str,
@@ -682,16 +494,11 @@ def parse_args():
     p.add_argument('--patience', type=int, default=80)
     p.add_argument('--huber_delta', type=float, default=5.0)
     p.add_argument('--seed', type=int, default=42)
-    p.add_argument('--vae_ckpt_dir', type=str,
-                   default='./pretrained_vae/checkpoints1')
-    p.add_argument('--freeze_tokenizer', action='store_true', default=False)
     p.add_argument('--save_model', action='store_true', default=True)
     p.add_argument('--path_save', type=str, default='./checkpoints/contrastive_transformer')
     p.add_argument('--n_pairs_per_batch', type=int, default=5)
     p.add_argument('--predictor_interval', type=int, default=3)
     p.add_argument('--use_amp', action='store_true', default=False)
-    p.add_argument('--test_beta', type=str, default='./data/test/test_beta.csv')
-    p.add_argument('--test_meta', type=str, default='./data/test/test_meta.csv')
     return p.parse_args()
 
 
@@ -731,9 +538,4 @@ if __name__ == '__main__':
     # ==========================================
     t_start = time.time()
     best_checkpoint = train(args, logger)
-    if best_checkpoint and os.path.exists(best_checkpoint):
-        try:
-            inference_external_test(best_checkpoint, args.test_beta, args.test_meta, device, logger)
-        except Exception as e:
-            logger.error(f'自动推理失败: {e}')
-    logger.info('全部完成！总耗时%.1f分钟', (time.time() - t_start) / 60)
+    logger.info('训练完成！总耗时%.1f分钟', (time.time() - t_start) / 60)

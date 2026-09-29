@@ -18,7 +18,6 @@ This repository contains the core model architecture, training scripts, and infe
 ```
 .
 ├── train.py                          # Main training script for PathTrace
-├── pathway_vae_sup_train_npz.py      # Pre-train supervised pathway VAEs (optional tokenizer init)
 ├── run_external_eval.py              # Inference and per-GSE/per-tissue evaluation on external test sets
 ├── data/
 │   └── pathways/
@@ -30,9 +29,7 @@ This repository contains the core model architecture, training scripts, and infe
 │       └── example_meta.csv      # Matching sample metadata and ages
 ├── models/
 │   ├── __init__.py
-│   ├── ContrastivePathwayTransformer.py   # PathTrace model
-│   ├── PathwayVAE.py                      # Vanilla pathway VAE
-│   └── PathwayVAESup.py                   # Supervised pathway VAE
+│   └── ContrastivePathwayTransformer.py   # PathTrace model
 └── utils/
     ├── __init__.py
     ├── dataload_utils.py             # NPZ dataset loaders
@@ -68,7 +65,7 @@ PathTrace was trained using the preprocessed pan-tissue DNA methylation dataset 
 
 Place the downloaded file at `./data/epiAge_traindata.npz`. The training dataset is maintained and distributed by the MAPLE authors and is not redistributed in this repository.
 
-> **Note:** Pre-trained PathTrace weights will be released separately.
+> **Note:** Pre-trained PathTrace weights are available at GitHub Release `v1.0.0`: https://github.com/djw1008/PathTrace/releases/tag/v1.0.0
 
 ## Training
 
@@ -83,17 +80,6 @@ python train.py \
   --num_epochs 500 \
   --path_save ./checkpoints/pathtrace
 ```
-
-For optional supervised pathway-VAE pre-training (used to initialize the tokenizer):
-
-```bash
-python pathway_vae_sup_train_npz.py \
-  --data_source ./data/epiAge_traindata.npz \
-  --gmt_file ./data/pathways/ReactomePathways.gmt \
-  --out_dir ./pretrained_vae
-```
-
-Then pass `--vae_ckpt_dir ./pretrained_vae/checkpoints` to `train.py`.
 
 ## External evaluation / inference
 

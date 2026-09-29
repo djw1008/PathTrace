@@ -72,33 +72,6 @@ class PathwayTokenizer(nn.Module):
                zip(self._cpg_idx_tensors, self.encoders)]
         return torch.stack(out, dim=1)
 
-    def load_pretrained_vae_weights(self, vae_state_dicts: List[dict]):
-        """从预训练 VAE checkpoint 加载权重到 PathwayTokenizer。
-        
-        VAE 结构: encoder.0 (Linear+ReLU) -> encoder.1 (Linear+ReLU) -> z_mean (Linear)
-        Tokenizer 结构: 0 (Linear) -> 1 (ReLU) -> 2 (Linear) -> 3 (ReLU) -> 4 (Linear)
-        """
-        for enc_mod, sd in zip(self.encoders, vae_state_dicts):
-            if not sd:
-                continue
-            new_sd = {}
-            # 映射 encoder.0.0 (VAE) -> 0 (Tokenizer)
-            if 'encoder.0.0.weight' in sd:
-                new_sd['0.weight'] = sd['encoder.0.0.weight']
-                new_sd['0.bias'] = sd['encoder.0.0.bias']
-            # 映射 encoder.1.0 (VAE) -> 2 (Tokenizer)
-            if 'encoder.1.0.weight' in sd:
-                new_sd['2.weight'] = sd['encoder.1.0.weight']
-                new_sd['2.bias'] = sd['encoder.1.0.bias']
-            # 映射 z_mean (VAE) -> 4 (Tokenizer，最后一层)
-            if 'z_mean.weight' in sd:
-                new_sd['4.weight'] = sd['z_mean.weight']
-                new_sd['4.bias'] = sd['z_mean.bias']
-            try:
-                enc_mod.load_state_dict(new_sd, strict=False)
-            except RuntimeError as e:
-                print(f"加载 VAE 权重失败: {e}")
-
 
 class LearnedPosEnc(nn.Module):
     def __init__(self, n_pathways: int, d_model: int):
