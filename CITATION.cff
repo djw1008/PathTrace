@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "PathTrace: A pathway-aware Transformer for cross-tissue DNA methylation age prediction via pairwise learning"
+authors:
+  - family-names: Xiong
+    given-names: Zhuang
+  - family-names: Dai
+    given-names: Junwen
+  - family-names: Chen
+    given-names: Xupeng
+  - family-names: Bao
+    given-names: Yiming
+  - family-names: Teng
+    given-names: Wenhao
+version: 1.0.0
+date-released: 2026-09-28
+license: MIT
+repository-code: https://github.com/djw1008/PathTrace
