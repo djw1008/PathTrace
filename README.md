@@ -102,3 +102,7 @@ The script outputs `predictions.csv`, `gse_mae_comparison.csv`, and `tissue_mae_
 ## Citation
 
 If you use this code, please cite the PathTrace paper (link to be added upon publication).
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
