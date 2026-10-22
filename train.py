@@ -45,9 +45,8 @@ device = torch.device('cpu')
 class NPZContrastiveDataset(Dataset):
     """包装 geo_npz_Dataset_train，只返回 feature 和 age（去掉 additional）"""
 
-    def __init__(self, base_dataset, training=False):
+    def __init__(self, base_dataset):
         self.base_dataset = base_dataset
-        self.training = training
 
     def __len__(self):
         return len(self.base_dataset)
@@ -61,10 +60,6 @@ class NPZContrastiveDataset(Dataset):
         if not isinstance(age, torch.Tensor):
             # age 可能是 numpy scalar 或 python float
             age = torch.tensor(age, dtype=torch.float32)
-        # 连续标签平滑：训练时对整数年龄加 [0,1) 均匀噪声
-        if self.training:
-            if torch.abs(age - torch.round(age)) < 1e-3:
-                age = age + torch.rand(1).item()
         # age 需要是 [1] 形状
         if age.dim() == 0:
             age = age.unsqueeze(0)
@@ -187,8 +182,8 @@ def train(args, logger):
     val_base = geo_npz_Dataset_train(file_npy=args.data_source, data_type='val')
 
     # 包装为只返回 feature 和 age 的 dataset
-    train_ds = NPZContrastiveDataset(train_base, training=True)
-    val_ds = NPZContrastiveDataset(val_base, training=False)
+    train_ds = NPZContrastiveDataset(train_base)
+    val_ds = NPZContrastiveDataset(val_base)
 
     # 加载 npz 获取 CpG 名称和训练集统计信息
     data_npy = np.load(args.data_source, allow_pickle=True)

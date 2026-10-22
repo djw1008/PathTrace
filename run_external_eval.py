@@ -1,6 +1,6 @@
 """run_external_eval.py
 
-对 PathTrace / 其消融变体在外部测试集上做跨 GSE 和跨组织评估。
+对 PathTrace 在外部测试集上做跨 GSE 和跨组织评估。
 逻辑参考 MAPLE-main/jupyter/run_both_models_on_gse.ipynb 中 TRACE 的评估部分。
 
 用法：
@@ -19,31 +19,14 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-from scipy import stats
 
-from models.ContrastivePathwayTransformer import ContrastivePathwayTransformer, TokenAggregator
+from models.ContrastivePathwayTransformer import ContrastivePathwayTransformer
 
 
 def load_model_from_checkpoint(checkpoint_path, device):
-    """加载训练好的 PathTrace / 消融模型。"""
+    """加载训练好的 PathTrace 模型。"""
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    ablation = ckpt.get('ablation', 'none')
 
-    if ablation == 'flat_mlp':
-        # Flat MLP: state_dict 是一个 nn.Sequential
-        from run_ablations import _build_flat_mlp
-        # 从 checkpoint 里恢复结构
-        config = ckpt.get('config', {})
-        hidden_topo = config.get('flat_mlp_hidden', config.get('hidden_topo', [2048, 1024, 512]))
-        feature_size = len(ckpt['cpg_names'])
-        flat_dims = [feature_size] + hidden_topo + [1]
-        model = _build_flat_mlp(flat_dims, dropout=config.get('dropout', 0.0)).to(device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        model.eval()
-        return model, ckpt, ablation
-
-    # Pathway 模型
     config = ckpt.get('config', {
         'latent_dim': 32,
         'hidden_topo': [64, 64],
@@ -71,50 +54,34 @@ def load_model_from_checkpoint(checkpoint_path, device):
         use_pos_enc=config.get('use_pos_enc', False),
     )
 
-    if ablation == 'no_transformer':
-        model.transformer = nn.Identity()
-        model.aggregator = TokenAggregator(len(pathway_cpg_idx), config['latent_dim'], mode='mean')
-        logging.info('[消融] 推理时重建 no_transformer 模型')
-
     model.load_state_dict(ckpt['model_state_dict'])
     model = model.to(device)
     model.eval()
-    return model, ckpt, ablation
+    return model, ckpt
 
 
-def run_inference(model, df_beta, cpg_names, cpg_means, x_train_knn, age_norm,
-                  device, ablation='none', batch_size=256):
+def run_inference(model, df_beta, cpg_names, cpg_means, age_norm,
+                  device, batch_size=256):
     """对 df_beta 做推理，返回预测年龄和样本 ID。"""
     df_beta_aligned = df_beta.reindex(cpg_names)
     df_beta_aligned = df_beta_aligned.apply(pd.to_numeric, errors='coerce')
     X_test_raw = df_beta_aligned.T.values.astype(np.float32)
     sample_ids = df_beta_aligned.columns.tolist()
 
-    # 缺失值填充
-    if cpg_means is not None:
-        X_test_filled = X_test_raw.copy()
-        nan_mask = np.isnan(X_test_filled)
-        X_test_filled = np.where(nan_mask, cpg_means, X_test_filled).astype(np.float32)
-        logging.info('使用 checkpoint cpg_means 填充，NaN 数: %d', nan_mask.sum())
-    elif x_train_knn is not None:
-        from sklearn.impute import KNNImputer
-        X_combined = np.vstack([x_train_knn, X_test_raw])
-        knn_imp = KNNImputer(n_neighbors=min(5, len(x_train_knn)))
-        X_combined_filled = knn_imp.fit_transform(X_combined)
-        X_test_filled = X_combined_filled[len(x_train_knn):].astype(np.float32)
-        logging.info('使用 KNN 填充')
-    else:
-        raise RuntimeError('checkpoint 中没有 cpg_means 或 x_train_knn')
+    # 缺失值填充：使用训练时保存在 checkpoint 中的训练集 CpG 均值
+    if cpg_means is None:
+        raise RuntimeError('checkpoint 中没有 cpg_means')
+    X_test_filled = X_test_raw.copy()
+    nan_mask = np.isnan(X_test_filled)
+    X_test_filled = np.where(nan_mask, cpg_means, X_test_filled).astype(np.float32)
+    logging.info('使用 checkpoint cpg_means 填充，NaN 数: %d', nan_mask.sum())
 
     preds = []
     with torch.no_grad():
         for i in range(0, X_test_filled.shape[0], batch_size):
             end = min(i + batch_size, X_test_filled.shape[0])
             batch = torch.from_numpy(X_test_filled[i:end]).to(device)
-            if ablation == 'flat_mlp':
-                pred = model(batch)
-            else:
-                pred = model(batch)
+            pred = model(batch)
             preds.append(pred.cpu().numpy())
 
     y_pred = np.concatenate(preds, axis=0).flatten() * age_norm
@@ -158,6 +125,10 @@ def evaluate_per_gse(results_df, output_dir):
             'Pearson_r': valid['true_age'].corr(valid['predicted_age']),
         })
 
+    if not gse_stats:
+        logging.warning('没有可用于按 GSE 统计的样本，跳过')
+        return None
+
     stats_df = pd.DataFrame(gse_stats).sort_values('MedAE')
     stats_path = os.path.join(output_dir, 'gse_mae_comparison.csv')
     stats_df.to_csv(stats_path, index=False)
@@ -200,6 +171,10 @@ def evaluate_per_tissue(results_df, output_dir, min_samples=10):
             'Pearson_r': valid['true_age'].corr(valid['predicted_age']),
         })
 
+    if not tissue_stats:
+        logging.warning('没有样本数达到 %d 的组织，跳过组织统计', min_samples)
+        return None
+
     tissue_df = pd.DataFrame(tissue_stats).sort_values('MedAE')
     tissue_path = os.path.join(output_dir, 'tissue_mae_comparison.csv')
     tissue_df.to_csv(tissue_path, index=False)
@@ -236,13 +211,11 @@ def main():
 
     # 加载模型
     logger.info('加载 checkpoint: %s', args.checkpoint)
-    model, ckpt, ablation = load_model_from_checkpoint(args.checkpoint, device)
+    model, ckpt = load_model_from_checkpoint(args.checkpoint, device)
     cpg_names = ckpt['cpg_names']
     cpg_means = ckpt.get('cpg_means', None)
-    x_train_knn = ckpt.get('x_train_knn', None)
     age_norm = ckpt.get('age_norm', 100.0)
-    logger.info('checkpoint ablation: %s, age_norm: %.1f, CpG 数: %d',
-                ablation, age_norm, len(cpg_names))
+    logger.info('age_norm: %.1f, CpG 数: %d', age_norm, len(cpg_names))
 
     # 加载 Meta
     logger.info('加载 Meta: %s', args.meta_path)
@@ -276,8 +249,8 @@ def main():
 
     # 推理
     y_pred, sample_ids = run_inference(
-        model, df_beta, cpg_names, cpg_means, x_train_knn,
-        age_norm, device, ablation=ablation, batch_size=args.batch_size
+        model, df_beta, cpg_names, cpg_means,
+        age_norm, device, batch_size=args.batch_size
     )
 
     # 合并结果

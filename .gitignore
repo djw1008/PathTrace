@@ -12,7 +12,6 @@ env/
 
 # Data / weights / outputs
 data/
-pretrained_vae/
 checkpoints/
 external_eval_results/
 *.npz

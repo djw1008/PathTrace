@@ -43,7 +43,7 @@ This repository contains the core model architecture, training scripts, and infe
 pip install -r requirements.txt
 ```
 
-Core packages: PyTorch, NumPy, pandas, scikit-learn, scipy, matplotlib.
+Core packages: PyTorch, NumPy, pandas, matplotlib.
 
 ## Data preparation
 
