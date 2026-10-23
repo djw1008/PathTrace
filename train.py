@@ -1,9 +1,6 @@
-"""ContrastivePathwayTransformer_train.py
+"""Train PathTrace on methylation data stored in NPZ format.
 
-训练脚本：PathwayTransformer + 对比学习做甲基化年龄回归。
-使用 npz 数据格式，加载速度更快。
-
-架构简介：
+Architecture:
   PathwayTokenizer -> LearnedPosEnc -> TransformerEncoder(自注意力)
   -> TokenAggregator(weighted) -> 两个分支：
      1. MLP -> 年龄（绝对值）
@@ -39,11 +36,11 @@ device = torch.device('cpu')
 
 
 # =============================================================================
-# Dataset 包装器（适配 geo_npz_Dataset_train）
+# Dataset adapter
 # =============================================================================
 
 class NPZContrastiveDataset(Dataset):
-    """包装 geo_npz_Dataset_train，只返回 feature 和 age（去掉 additional）"""
+    """Return methylation features and chronological age."""
 
     def __init__(self, base_dataset):
         self.base_dataset = base_dataset
@@ -53,26 +50,22 @@ class NPZContrastiveDataset(Dataset):
 
     def __getitem__(self, idx):
         feature, age, additional = self.base_dataset[idx]
-        # geo_npz_Dataset_train 返回的已经是 numpy array 或 float
-        # 转换为 tensor
         if not isinstance(feature, torch.Tensor):
             feature = torch.from_numpy(feature).float()
         if not isinstance(age, torch.Tensor):
-            # age 可能是 numpy scalar 或 python float
             age = torch.tensor(age, dtype=torch.float32)
-        # age 需要是 [1] 形状
         if age.dim() == 0:
             age = age.unsqueeze(0)
         return feature, age
 
 
 # =============================================================================
-# 通路索引构建（从 npz 文件的 cpgs）
+# Pathway-index construction
 # =============================================================================
 
 def build_pathway_indices_from_npz(gmt_path, cpg_names, min_cpgs=5, max_cpgs=500,
                                    max_pathways=0, logger=None):
-    """从 GMT 文件构建通路索引，cpg_names 来自 npz 文件"""
+    """Build pathway-specific CpG indices from a GMT annotation file."""
 
     def log(m):
         (logger.info if logger else print)(m)
@@ -102,25 +95,22 @@ def build_pathway_indices_from_npz(gmt_path, cpg_names, min_cpgs=5, max_cpgs=500
 
 
 # =============================================================================
-# 评估
+# Evaluation
 # =============================================================================
 
 def evaluate(model, loader, prefix, epoch, logger, age_norm=100.0):
-    """标准评估（单样本）"""
+    """Evaluate absolute-age predictions in years."""
     model.eval()
     preds, trues = [], []
     with torch.no_grad():
         for X_batch, y_batch in loader:
             X_batch = X_batch.to(device)
-            # 模型输出是归一化的
             age_pred = model(X_batch).cpu().numpy()
             preds.append(age_pred)
-            # y_batch 是原始年龄（未归一化）
             trues.append(y_batch.numpy())
 
-    # 预测值需要反归一化，真实值已经是原始年龄
     y_pred = np.vstack(preds).flatten() * age_norm
-    y_true = np.vstack(trues).flatten()  # 已经是原始年龄，不要乘以 age_norm
+    y_true = np.vstack(trues).flatten()
     mae = float(np.mean(np.abs(y_pred - y_true)))
     rmse = float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
     corr = float(np.corrcoef(y_pred, y_true)[0, 1]) if len(y_pred) > 1 else 0.0
@@ -133,7 +123,7 @@ def evaluate(model, loader, prefix, epoch, logger, age_norm=100.0):
 
 
 # =============================================================================
-# 绘图
+# Plotting
 # =============================================================================
 
 def plot_scatter(y_true, y_pred, mae, rmse, save_path):
@@ -166,46 +156,39 @@ def plot_pathway_importance(weights, pathway_ids, save_path, top_n=30):
 
 
 # =============================================================================
-# 训练主函数
+# Training
 # =============================================================================
 
 def train(args, logger):
     global device
 
-    # ── 1. 加载 npz 数据（使用 geo_npz_Dataset_train）────────────────────────
     logger.info('=' * 60)
     logger.info('[数据加载] 从 npz 文件加载数据...')
     logger.info(f'  数据文件: {args.data_source}')
 
-    # 使用 geo_npz_Dataset_train 加载数据
     train_base = geo_npz_Dataset_train(file_npy=args.data_source, data_type='train')
     val_base = geo_npz_Dataset_train(file_npy=args.data_source, data_type='val')
 
-    # 包装为只返回 feature 和 age 的 dataset
     train_ds = NPZContrastiveDataset(train_base)
     val_ds = NPZContrastiveDataset(val_base)
 
-    # 加载 npz 获取 CpG 名称和训练集统计信息
     data_npy = np.load(args.data_source, allow_pickle=True)
     cpg_names = list(data_npy['cpgs'])
     feature_size = len(cpg_names)
 
-    # 从data字典中提取训练集样本用于计算统计信息
     train_index = data_npy['train_index']
     data_dict = data_npy['data'].item()
 
-    # 提取训练集特征矩阵
     x_train_list = []
     for key in train_index:
         if key in data_dict:
             x_train_list.append(data_dict[key]['feature'])
     x_train = np.array(x_train_list, dtype=np.float32)
 
-    # 计算训练集每个CpG位点的均值（用于推理时缺失值填充）
+    # Training-set CpG means are stored for inference-time imputation.
     cpg_means = np.mean(x_train, axis=0).astype(np.float32)
     logger.info(f'  已计算训练集CpG均值，用于推理缺失值填充')
 
-    # 保存训练集子集用于KNN插补
     knn_max_samples = 2000
     if len(x_train) > knn_max_samples:
         rng = np.random.RandomState(42)
@@ -220,7 +203,6 @@ def train(args, logger):
     logger.info(f'  验证集样本数: {len(val_ds)}')
     logger.info('=' * 60)
 
-    # ── 2. 构建 DataLoader ─────────────────────────────────────────────────
     train_ld = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True,
         drop_last=True, num_workers=args.num_workers,
@@ -232,7 +214,6 @@ def train(args, logger):
         pin_memory=(device.type == 'cuda')
     )
 
-    # ── 3. 通路索引构建 ────────────────────────────────────────────────────
     pathway_ids, pathway_cpg_idx = build_pathway_indices_from_npz(
         args.gmt_file, cpg_names,
         min_cpgs=args.min_cpgs, max_cpgs=args.max_cpgs,
@@ -241,7 +222,6 @@ def train(args, logger):
     if not pathway_cpg_idx:
         raise RuntimeError('未找到有效通路，请检查 --gmt_file 和 CpG 名称。')
 
-    # ── 4. 模型 ────────────────────────────────────────────────────────────
     hidden_topo = [int(h) for h in args.hidden_topo.split(',')]
     pred_hidden = [int(h) for h in args.pred_hidden.split(',')]
     diff_hidden = [int(h) for h in args.diff_predictor_hidden.split(',')]
@@ -272,21 +252,18 @@ def train(args, logger):
     logger.info('通路数: %d，latent_dim: %d，Transformer 层数: %d',
                 len(pathway_ids), args.latent_dim, args.num_layers)
 
-    # ── 5. 优化器和损失（交替训练 - 双优化器）────────────────────────
     raw_model = model.module if isinstance(model, nn.DataParallel) else model
 
-    # 收集encoder参数（共用部分）
+    # The two objectives update a shared encoder through separate optimizers.
     encoder_params = list(raw_model.tokenizer.parameters()) + \
                      list(raw_model.transformer.parameters()) + \
                      list(raw_model.aggregator.parameters())
     if raw_model.use_pos_enc and raw_model.pos_enc is not None:
         encoder_params += list(raw_model.pos_enc.parameters())
 
-    # 对比学习优化器：encoder + diff_predictor
     contrast_params = encoder_params + list(raw_model.diff_predictor.parameters())
     contrast_optimizer = optim.AdamW(contrast_params, lr=args.lr, weight_decay=1e-4)
 
-    # 年龄预测优化器：encoder + age_predictor
     predictor_params = encoder_params + list(raw_model.age_predictor.parameters())
     predictor_optimizer = optim.AdamW(predictor_params, lr=args.lr * 0.5, weight_decay=1e-4)
 
@@ -299,12 +276,10 @@ def train(args, logger):
     criterion_age = nn.HuberLoss(delta=args.huber_delta / AGE_NORM)
     criterion_diff = nn.HuberLoss(delta=args.huber_delta / AGE_NORM)
 
-    # ── 6. AMP / Scaler 初始化 ──────────────────────────────
     scaler = GradScaler() if args.use_amp else None
     if args.use_amp:
         logger.info('启用 Automatic Mixed Precision (AMP) 训练')
 
-    # ── 7. 训练循环 ──────────────────────────────────────────
     best_mae, best_epoch = float('inf'), 0
     t0 = time.time()
     logger.info('=' * 60)
@@ -318,13 +293,12 @@ def train(args, logger):
         total_age_loss = 0.0
         steps = 0
 
-        # Stage 1: 对比学习
+        # Stage 1: pairwise age-difference learning.
         for X_batch, y_batch in train_ld:
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device) / AGE_NORM
             batch_size = X_batch.size(0)
 
-            # 构造对比样本对
             perm = torch.randperm(batch_size, device=device)
             X_batch_2 = X_batch[perm]
             y_batch_2 = y_batch[perm]
@@ -356,7 +330,7 @@ def train(args, logger):
         scheduler_c.step()
         avg_diff_loss = total_diff_loss / max(steps, 1)
 
-        # Stage 2: 年龄预测
+        # Stage 2: absolute-age regression.
         for X_batch, y_batch in train_ld:
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device) / AGE_NORM
@@ -385,7 +359,6 @@ def train(args, logger):
         elapsed = time.time() - t0
         remaining = elapsed / epoch * (args.num_epochs - epoch)
 
-        # 验证
         if epoch % args.val_interval == 0:
             model.eval()
             evaluate(model, train_ld, '训练集', epoch, logger, AGE_NORM)
@@ -525,12 +498,10 @@ if __name__ == '__main__':
         device = torch.device('cpu')
     logger.info('使用设备: %s', device)
 
-    # ====== 就在这里把丢失的代码补回来！ ======
     logger.info('=' * 60)
     for k, v in vars(args).items():
         logger.info('   %-25s: %s', k, v)
     logger.info('=' * 60)
-    # ==========================================
     t_start = time.time()
     best_checkpoint = train(args, logger)
     logger.info('训练完成！总耗时%.1f分钟', (time.time() - t_start) / 60)

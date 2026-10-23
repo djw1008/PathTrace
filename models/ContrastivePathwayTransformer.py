@@ -1,8 +1,6 @@
-"""ContrastivePathwayTransformer.py
+"""PathTrace model architecture.
 
-PathwayTransformer + 对比学习（双样本对比分支）
-
-架构：
+Components:
   1. PathwayTokenizer  : 每条通路 CpG -> MLP -> latent token  (B, N, d)
   2. LearnedPosEnc     : 可学习位置编码
   3. TransformerEncoder: 标准多层自注意力（Pre-LN）
@@ -43,7 +41,7 @@ def _mlp(dims: List[int], dropout: float = 0.0) -> nn.Sequential:
 
 
 class PathwayTokenizer(nn.Module):
-    """每条通路的 CpG 子集 -> 一个 latent token。"""
+    """Encode each pathway-specific CpG subset as one latent token."""
 
     def __init__(self, pathway_cpg_indices: List[List[int]],
                  latent_dim: int = 32,
@@ -84,7 +82,7 @@ class LearnedPosEnc(nn.Module):
 
 
 class TokenAggregator(nn.Module):
-    """(B, N, d) -> (B, d)，weighted softmax 模式支持通路可解释性。"""
+    """Aggregate pathway tokens from ``(B, N, d)`` to ``(B, d)``."""
 
     def __init__(self, n_pathways: int, d_model: int, mode: str = 'weighted'):
         super().__init__()
@@ -117,12 +115,7 @@ class TokenAggregator(nn.Module):
 
 
 class ContrastivePathwayTransformer(nn.Module):
-    """PathwayTransformer + 对比学习（双样本对比分支）
-
-    同时学习：
-    1. 绝对年龄预测（监督学习）
-    2. 年龄差异预测（对比学习）
-    """
+    """Pathway-aware Transformer with absolute- and relative-age branches."""
 
     def __init__(
         self,
@@ -150,7 +143,7 @@ class ContrastivePathwayTransformer(nn.Module):
         n_pathways = len(pathway_cpg_indices)
         d_model = latent_dim
 
-        # 编码器（与PathwayTransformer相同）
+        # Shared pathway encoder.
         self.tokenizer = PathwayTokenizer(pathway_cpg_indices, latent_dim, hidden_topo)
         self.use_pos_enc = use_pos_enc
         self.pos_enc = LearnedPosEnc(n_pathways, d_model) if use_pos_enc else None
@@ -170,12 +163,11 @@ class ContrastivePathwayTransformer(nn.Module):
         )
         self.aggregator = TokenAggregator(n_pathways, d_model, aggregator_mode)
 
-        # 绝对年龄预测头（回归模式）
+        # Absolute-age prediction head.
         pred_dims = [d_model] + predictor_hidden + [1]
         self.age_predictor = _mlp(pred_dims, dropout=dropout)
 
-        # 对比学习分支：年龄差异预测头
-        # 输入：[enc1, enc2, |enc1-enc2|] -> 3 * d_model
+        # Relative-age head input: [enc1, enc2, enc1 - enc2].
         diff_input_dim = d_model * 3
         diff_dims = [diff_input_dim] + diff_predictor_hidden + [1]
         self.diff_predictor = _mlp(diff_dims, dropout=dropout)
@@ -199,7 +191,7 @@ class ContrastivePathwayTransformer(nn.Module):
         tokens = self.tokenizer(x)   # (B, N, d)
         if self.use_pos_enc and self.pos_enc is not None:
             tokens = self.pos_enc(tokens)
-        # Token Dropout：训练时随机将整条通路的 token 置零，迫使模型分散依赖
+        # Optional pathway-token dropout.
         if self.training and self.token_dropout > 0:
             mask = torch.rand(tokens.size(0), tokens.size(1), 1,
                               device=tokens.device) > self.token_dropout
@@ -209,12 +201,12 @@ class ContrastivePathwayTransformer(nn.Module):
 
     def forward(self, x: torch.Tensor, x2: Optional[torch.Tensor] = None, mode: str = 'predict') -> torch.Tensor:
         if mode == 'predict':
-            # 绝对年龄预测（推理 & 训练右脚）
+        # Absolute-age prediction.
             enc = self.encode(x)
             return self.age_predictor(enc)
 
         elif mode == 'contrastive':
-            # 对比学习（训练左脚）
+        # Pairwise age-difference prediction.
             enc1 = self.encode(x)
             enc2 = self.encode(x2)
             diff_feat = torch.cat([enc1, enc2, enc1 - enc2], dim=1)

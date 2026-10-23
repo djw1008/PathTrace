@@ -1,9 +1,6 @@
-"""run_external_eval.py
+"""Run PathTrace inference and external-cohort evaluation.
 
-对 PathTrace 在外部测试集上做跨 GSE 和跨组织评估。
-逻辑参考 MAPLE-main/jupyter/run_both_models_on_gse.ipynb 中 TRACE 的评估部分。
-
-用法：
+Usage:
     python run_external_eval.py \
         --checkpoint ./checkpoints/abl_none/checkpoints/best_model.pt \
         --beta_path /path/to/beta_values_all.csv \
@@ -24,7 +21,7 @@ from models.ContrastivePathwayTransformer import ContrastivePathwayTransformer
 
 
 def load_model_from_checkpoint(checkpoint_path, device):
-    """加载训练好的 PathTrace 模型。"""
+    """Load a PathTrace checkpoint for inference."""
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     config = ckpt.get('config', {
@@ -62,13 +59,13 @@ def load_model_from_checkpoint(checkpoint_path, device):
 
 def run_inference(model, df_beta, cpg_names, cpg_means, age_norm,
                   device, batch_size=256):
-    """对 df_beta 做推理，返回预测年龄和样本 ID。"""
+    """Predict age from a CpG-by-sample beta-value matrix."""
     df_beta_aligned = df_beta.reindex(cpg_names)
     df_beta_aligned = df_beta_aligned.apply(pd.to_numeric, errors='coerce')
     X_test_raw = df_beta_aligned.T.values.astype(np.float32)
     sample_ids = df_beta_aligned.columns.tolist()
 
-    # 缺失值填充：使用训练时保存在 checkpoint 中的训练集 CpG 均值
+    # Impute missing values with training-set CpG means stored in the checkpoint.
     if cpg_means is None:
         raise RuntimeError('checkpoint 中没有 cpg_means')
     X_test_filled = X_test_raw.copy()
@@ -101,7 +98,7 @@ def map_chip_type(platform):
 
 
 def evaluate_per_gse(results_df, output_dir):
-    """按 GSE 计算 MedAE、RMSE、Pearson R（仅 control 样本）。"""
+    """Calculate cohort-level metrics for control samples."""
     if 'project_id' not in results_df.columns:
         raise KeyError('Meta 中缺少 project_id 列')
 
@@ -142,7 +139,7 @@ def evaluate_per_gse(results_df, output_dir):
 
 
 def evaluate_per_tissue(results_df, output_dir, min_samples=10):
-    """按组织类型计算 MedAE（仅 control + 450K 样本）。"""
+    """Calculate tissue-level metrics for control samples profiled on 450K arrays."""
     if 'tissue' not in results_df.columns:
         logging.warning('Meta 缺少 tissue 列，跳过组织分析')
         return None
@@ -209,7 +206,6 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info('使用设备: %s', device)
 
-    # 加载模型
     logger.info('加载 checkpoint: %s', args.checkpoint)
     model, ckpt = load_model_from_checkpoint(args.checkpoint, device)
     cpg_names = ckpt['cpg_names']
@@ -217,7 +213,6 @@ def main():
     age_norm = ckpt.get('age_norm', 100.0)
     logger.info('age_norm: %.1f, CpG 数: %d', age_norm, len(cpg_names))
 
-    # 加载 Meta
     logger.info('加载 Meta: %s', args.meta_path)
     df_meta = pd.read_csv(args.meta_path, sep=',')
     id_col = None
@@ -236,7 +231,6 @@ def main():
     if 'age' in df_meta.columns:
         df_meta['age'] = pd.to_numeric(df_meta['age'], errors='coerce')
 
-    # 加载 Beta
     logger.info('加载 Beta: %s', args.beta_path)
     df_beta = pd.read_csv(args.beta_path, sep=',', index_col=0)
     df_beta.columns = df_beta.columns.astype(str)
@@ -247,13 +241,11 @@ def main():
     df_meta = df_meta.loc[common_samples, :].copy()
     logger.info('共同样本数: %d', len(common_samples))
 
-    # 推理
     y_pred, sample_ids = run_inference(
         model, df_beta, cpg_names, cpg_means,
         age_norm, device, batch_size=args.batch_size
     )
 
-    # 合并结果
     results_df = df_meta.copy().reset_index()
     results_df.rename(columns={results_df.columns[0]: 'sample_id'}, inplace=True)
     results_df['predicted_age'] = y_pred
@@ -270,7 +262,6 @@ def main():
     else:
         results_df['chip_type'] = 'Unknown'
 
-    # 动态排除 GSE
     if args.exclude_gse:
         exclude_list = [x.strip() for x in args.exclude_gse.split(',') if x.strip()]
         if 'project_id' in results_df.columns:
@@ -278,12 +269,10 @@ def main():
             results_df = results_df[~results_df['project_id'].isin(exclude_list)].copy()
             logger.info('排除 GSE %s，样本数从 %d 减少到 %d', exclude_list, n_before, len(results_df))
 
-    # 保存合并结果
     pred_path = os.path.join(args.output_dir, 'predictions.csv')
     results_df.to_csv(pred_path, index=False)
     logger.info('预测结果已保存: %s', pred_path)
 
-    # 评估
     evaluate_per_gse(results_df, args.output_dir)
     evaluate_per_tissue(results_df, args.output_dir, min_samples=args.min_tissue_samples)
 

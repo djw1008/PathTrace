@@ -1,6 +1,3 @@
-# open file in write mode
-
-
 import os
 
 
